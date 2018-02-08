@@ -1,0 +1,481 @@
+#+OPTIONS: html-link-use-abs-url:nil html-postamble:auto
+#+OPTIONS: html-preamble:t html-scripts:t html-style:t
+#+OPTIONS: html5-fancy:nil tex:t
+#+OPTIONS: author:nil creator:nil date:nil email:nil toc:1
+#+HTML_DOCTYPE: xhtml-strict
+#+HTML_CONTAINER: div
+#+DESCRIPTION:
+#+KEYWORDS:
+#+HTML_LINK_HOME:
+#+HTML_LINK_UP:
+#+HTML_MATHJAX:
+#+HTML_HEAD:
+#+HTML_HEAD_EXTRA:
+#+SUBTITLE:
+#+INFOJS_OPT:
+#+CREATOR: <a href="https://www.gnu.org/software/emacs/">Emacs</a> 25.3.1 (<a href="http://orgmode.org">Org</a> mode 9.1.3)
+#+LATEX_HEADER:
+#+LANGUAGE: en
+#+TITLE: Introduction to asynchronous programming with Python and Twisted
+#+DATE: <2018-02-09 jue>
+#+AUTHOR: Jonathan Sandoval
+#+EMAIL: jsandoval@utp.edu.co
+#+REVEAL_ROOT: http://cdn.jsdelivr.net/reveal.js/3.0.0/
+#+REVEAL_PLUGINS: (notes)
+#+REVEAL_THEME: white
+
+* ¿What is Twisted?
+  - Event driven networking engine.
+  - It's an asynchronous framework.
+  - Twisted supports numerous protocols. Web server, chat, mail, DNS
+    and more.
+  - It's made-up of many sub-projects.
+
+#+BEGIN_NOTES
+Hi everyone. I want to thank to the PyCon Colombia organizers for the
+opportunity to be here giving this talk and to all of you for
+listening to it.
+
+The title of my talk is "Introduction to asynchronous programming with
+Python and Twisted". It's a very precise title because what I'll do
+here is show you some asynchronous concepts with python and the
+twisted framework. And I plan on comparing those examples with the
+AsyncIO framework that's trendy in the python world.
+
+So, this is the structure of my talk.
+
+And, before going on I want to talk a little you about me.
+
+You may wonder, ¿why twisted?. Because I have plenty of experience in
+it. I worked around 8 years with the twisted framework.
+#+END_NOTES
+
+* An example
+  #+begin_src python
+    def download_urls(url_list):
+      for url in url_list:
+          response = get(url)
+          d = parse(response.text)
+          mongo_client.test.pages.insert_one(d)
+
+    urls = [
+        'https://en.wikipedia.org/wiki/Saguaro_National_Park',
+        'https://en.wikipedia.org/wiki/Saguaro',
+        'https://en.wikipedia.org/wiki/The_Power_of_Sympathy',
+        'http://cienciaconelpueblo.org'
+    ]
+
+    download_urls(urls)
+  #+end_src
+  #+BEGIN_NOTES
+  What you can see here is a simple function that receives as
+  arguments a =list= of urls. I use =get= here from requests to
+  download it, ="parse it"= and store it in a database.
+
+  Let's say this is a simple web crawler.
+
+  Maybe most of you notice that this crawler is sequential. It does
+  not download two urls at the same time.
+
+  Let's profile a little to see where is the bottleneck.
+  #+END_NOTES
+** Profiling (sorted by cumulative time)
+   [[./profile.png]]
+   #+BEGIN_NOTES
+   As you can see, the slowest part of my code is the =get= call. It's
+   no surprise because going to the internet tends to always be slower
+   than using local functions.
+
+   Here the database query is not slow because it's local. It goes
+   through a unix socket.
+
+   Let's use the =time= unix call in this code.
+   #+END_NOTES
+** Let's time it
+   [[./time_crawler.png]]
+   #+BEGIN_NOTES
+   I run the application with the unix command =time=. I want to focus
+   only on real and user time. The real time is the total time the
+   application takes. In this case, it's almost three seconds in real
+   time but only .3 seconds in user time. Remeber that real time is
+   the time the applications takes to execute, while user time is CPU
+   time. What this means is that this simple example and for this kind
+   of application, the network oriented, and/or database oriented
+   ones, most of its time is spent *blocked*.
+   #+END_NOTES
+** We can see that...
+   - Most of the time is spent in =get= in =requests=.
+   - Only one download (and store) at a time. It's a sequential function.
+   - Mongo query is fast because is local and it's a simple query.
+   - ¡ =get= is *blocking* !. Process sleeps till the response.
+   #+BEGIN_NOTES
+   Here is a summary of the results. As I said, =get= uses most of the
+   execution time. It downloads the urls one bye one and it blocks
+   while downloading. It blocks while querying mongo too, but this
+   query is fast because it's local.
+
+   It's worth discussing the concept of blocked.
+   #+END_NOTES
+* What is *blocking*
+   - Blocking :: A process (or thread) is =waiting= for some condition
+                 to be satisfied before it can continue execution. A
+                 blocked thread is doing *NO USEFUL WORK*
+   - Running :: A process (or thread) is =stuck= doing some
+                computationally intensive work or complex
+                computation. It's sucking CPU cycles doing *USEFUL
+                WORK*.
+   #+BEGIN_NOTES
+   We have to discuss the concept of blocked next to the concept of
+   running. This two concepts are very important in asynchronous
+   programming and I'll talk a little about it later in the talk.
+
+   Right now let's define blocking as waiting for some condition to be
+   satisfied before continuing execution. A blocked thread is doing no
+   useful work.
+
+   Let's think this as in doing the legalization of a company. I have
+   a new startup and I'm going to legalize it with the government. I
+   take some legal documents to a government office and they'll have
+   my answer in 15 days. I can't do anything else while waiting. I
+   could as well go to sleep.
+
+   Running means a thread, for example, is busy doing a complex or cpu
+   intensive work. It cannot do anything else, but because it's
+   already busy doing something.
+
+   For example, as a programmer, if I'm busy doing a task, I cannot do
+   something else at the same time. I'm blocked but because I'm
+   actually doing useful work.
+
+   Let's see an example of running.
+   #+END_NOTES
+** A /running/ example
+   #+begin_src python
+     def show_primes(lower, upper):
+         primes = []
+         for num in range(lower,upper + 1):
+            if num > 1:
+                for i in range(2,num):
+                    if (num % i) == 0:
+                        break
+                else:
+                    primes.append(primes)
+   #+end_src
+   #+BEGIN_NOTES
+   Here we see a simple function that prints the prime numbers between
+   a lower and an upper number. This calculation does no I/O, it's a
+   for loop that could take time if upper and lower are far apart.
+
+   Let's see the numbers:
+   #+END_NOTES
+** Comparison (crawler vs. primes)
+   - Timing crawler:
+     [[./time_crawler.png]]
+   - Timing primes:
+     [[./time_primes.png]]
+   #+BEGIN_NOTES
+   You can see here that in the primes example; almost all of the time
+   is spent in CPU.
+
+   Finally, it's time to go async. Let's use twisted to go async.
+   #+END_NOTES
+* Going async with twisted
+** Straightforward implementation
+   #+begin_src python
+     from txmongo import MongoConnection
+     from treq import get
+     from twisted.internet import defer, reactor
+
+     @defer.inlineCallbacks
+     def download_urls(url_list):
+         mongo_client = yield MongoConnection()
+
+         for url in url_list:
+             response = yield get(url)
+             d = parse((yield response.text()))
+
+             yield mongo_client.test.pages.insert(d)
+
+     download_urls(urls).addCallback(lambda ign: reactor.stop())
+     reactor.run()
+   #+end_src
+   #+BEGIN_NOTES
+   This is a straightforward implementation of the sync code but in
+   twisted.
+
+   You can see here that the async and the sync versions of this code
+   is almost the same except for a couple of things.
+   #+END_NOTES
+** async requests (treq) and async mongo driver (txmongo)
+   - We have to use async versions of requests and mongo.
+     #+begin_src python
+     from txmongo import MongoConnection
+     from treq import get
+
+     mongo_client = yield MongoConnection()
+     response = yield get(url)
+     d = parse((yield response.text()))
+     #+end_src
+     #+BEGIN_NOTES
+     First thing to notice here is that I can't use pymongo and I
+     cannot use requests either. I have to use specific async versions
+     of these libraries that are developed indendently from the
+     original ones. That's a disadvantage of async programming. We
+     need async replacemets for database drivers, networking, etc.
+     #+END_NOTES
+** Inlinecallbacks
+   - The function has to be declared with the inlineCallbacks
+     decorator.
+   - Inlinecallbacks means "courotine" in asyncio or
+     tornado.
+     #+begin_src python
+       @defer.inlineCallbacks
+       def download_urls(url_list):
+     #+end_src
+   #+BEGIN_NOTES
+   The second notorious thing here is the inlineCallbacks
+   decorator. It means that download_urls is a coroutine. In asyncio
+   and tornado they're called coroutines. It just shows that twisted
+   has some really bad name choices.
+
+   A coroutine is a function that stops in certain lines to allow
+   other coroutines to work. If I'm a coroutine and I'm going to
+   block because I'll go to internet, then I'll allow other coroutines
+   to work.
+
+   Let's see how:
+   #+END_NOTES
+** Yield
+   - There are =yields= everywhere.
+   - A =yield= means the coroutine is going to block.
+     #+begin_src python
+       @defer.inlineCallbacks
+         def download_urls(url_list):
+             mongo_client = yield MongoConnection()
+
+             for url in url_list:
+                 response = yield get(url)
+                 d = parse((yield response.text()))
+
+                 yield mongo_client.test.pages.insert(d)
+   #+end_src
+   #+BEGIN_NOTES
+   There are yields everywhere!. A yield means the coroutine is going
+   to block. A yield is needed to use get, a yield is needed to
+   perform database operations that could block.
+   #+END_NOTES
+** But...
+   This code uses async constructs, but *it's* sequential.
+
+   *¡It only downloads only one url at a time!*
+** A better async approach
+   #+begin_src python
+     from txmongo import MongoConnection
+     from treq import get
+     from twisted.internet import defer, reactor
+
+     @defer.inlineCallbacks
+     def download_url(url):
+         """Download and store single url"""
+         response = yield get(url)
+         d = parse((yield response.text()))
+         yield mongo_client.test.pages.insert(d)
+
+     @defer.inlineCallbacks
+     def download_urls(url_list):
+         mongo_client = yield MongoConnection()
+         # Here, we create a coroutine per url. That means we download them
+         # all at once.
+         # We then wait to all coroutines to finish with "gatherResults"
+         yield defer.gatherResults(download_url(url) for url in url_list)
+
+     download_urls(urls).addCallback(lambda ign: reactor.stop())
+     reactor.run()
+   #+end_src
+   #+BEGIN_NOTES
+   This examples uses two coroutines. The first one executed is
+   "download_urls". It creates a download_url coroutine for every url
+   an the waits for them to finish with gatherResults.
+
+   Of course, if there were mor couroutines working, they could be
+   working while these two are yielding.
+   #+END_NOTES
+** A not rigorous comparison
+   - Synchronous crawler
+     [[./time_crawler.png]]
+   - Async but sequeantial crawler.
+     [[./time_twisted1.png]]
+#+REVEAL: split
+   - Async concurrent crawler.
+     [[./time_twisted2.png]]
+     #+BEGIN_NOTES
+     As you can see, the sync and the straightforward async versions
+     don't differ a lot in time. Anyway, in average, the async version
+     tends to be faster. But, with the async version with coroutines
+     you have a significant gain in speed, even for a small example of
+     four urls. And, as you can see, it uses the CPU better.
+
+     Now, let's make the first comparison with asyncio.
+     #+END_NOTES
+* Asyncio
+** Straightforward example
+   #+begin_src python
+     import asyncio
+     from aiohttp import ClientSession
+     from motor.motor_asyncio import AsyncIOMotorClient
+
+     async def download_urls(url_list):
+         client = ClientSession()
+
+         mongo_client = AsyncIOMotorClient()
+
+         for url in url_list:
+             response = await client.get(url)
+             d = parse(await response.text())
+             await mongo_client.test.pages.insert_one(d)
+
+         await client.close()
+
+     loop = asyncio.get_event_loop()
+     loop.run_until_complete(download_urls(urls))
+   #+end_src
+   #+BEGIN_NOTES
+   As you can see, this code is very similar to the twisted one.
+   #+END_NOTES
+** Async versions of mongo and requests
+   - Async versions must be used for database drivers and networking.
+   #+begin_src
+   from aiohttp import ClientSession
+   from motor.motor_asyncio import AsyncIOMotorClient
+   #+end_src
+** async def, await
+   - In python3.5 we have =await= (insted of yield and yield for), and
+     =async def= (instead of the @coroutine decorator).
+   - We can use =async for= and =async with= too.
+   #+begin_src python
+     async def download_urls(url_list):
+         client = ClientSession()
+
+         mongo_client = AsyncIOMotorClient()
+
+         for url in url_list:
+             response = await client.get(url)
+             d = parse(await response.text())
+             await mongo_client.test.pages.insert_one(d)
+
+         await client.close()
+   #+end_src
+** A better approach
+   #+begin_src python
+     import asyncio
+     from aiohttp import ClientSession
+     from motor.motor_asyncio import AsyncIOMotorClient
+
+     async def download_url(url, client):
+         response = await client.get(url)
+         d = parse(await response.text())
+         await mongo_client.test.pages.insert_one(d)
+
+
+     async def download_urls(url_list):
+         async with ClientSession as client:
+             mongo_client = AsyncIOMotorClient()
+
+             await asyncio.gather(download_url(url, client) for url in url_list)
+
+     loop = asyncio.get_event_loop()
+     loop.run_until_complete(download_urls(urls))
+   #+end_src
+* Example of web programming in twisted
+  #+begin_src python
+    import treq
+    from klein import Klein
+
+    app = Klein()
+
+    @app.route('/')
+    async def google(request):
+        response = await treq.get(b'https://www.google.com')
+        content = await treq.content(response)
+        return content
+
+    app.run("localhost", 8080)
+  #+end_src
+  #+BEGIN_NOTES
+  Now I want to show you some web programming in twisted. Here we see a
+  small example of web programming with twisted and a microframework
+  called klein.
+
+  This small code uses treq (twisted requests) to download the google
+  site and renders it.
+  #+END_NOTES
+** Explanation
+   - Klein is a microframework a la Flask.
+   - Flask route style.
+   - No proxy objects. Every =view= gets the request (a lot better!!).
+   - And it's compatible with =async def= and =await=.
+     #+BEGIN_NOTES
+     It's pretty self explanatory. Klein is a microframework /a la /
+     Flask. It uses the flask routing style that I like more than the
+     djagno one. And it does not use the ugly flask proxy objects.
+
+     As you can see, Klein (twisted) is compatible with async def and
+     await syntax.
+     #+END_NOTES
+* AsyncIO for Web (with Sanic)
+  #+begin_src python
+    from sanic import Sanic
+    from sanic.response import html
+    from aiohttp import ClientSession
+
+    app = Sanic()
+
+    @app.route("/")
+    async def test(request):
+        client = ClientSession()
+        response = await client.get('https://www.google.com')
+        content = await response.text()
+        return html(content)
+
+    if __name__ == "__main__":
+        app.run(host="0.0.0.0", port=8000)
+  #+end_src
+
+** Explanation
+   - Sanic is a microframework /a la / Flask for AsyncIO.
+   - The Sanic example and the Klein example are almost equal.
+* ¿Why not threads or processes?
+  - The infamous GIL.
+  - Operating system limits (max processes and threads).
+  - Threads and process creation overhead.
+  - Debugging threads *is* hard.
+* Mixing threads with twisted/asyncio
+  #+begin_src python
+    import time
+    from twisted.internet import reactor, threads, defer
+
+    # To be executed in thread, not coroutine.
+    def do_long_calculation():
+        time.sleep(3)
+        return 3
+
+    @defer.inlineCallbacks
+    def print_result():
+        # Await thread temination
+        x = yield threads.deferToThread(do_long_calculation)
+        print(x)
+
+    print_result().addCallback(lambda ign: reactor.stop())
+    reactor.run()
+  #+end_src
+** Explanation
+   - You can send long running code to a thread and =await= (or
+     =yield=) for it.
+   - The function is executed in a thread pool.
+   - This way you can mix threads (and processes too) with twisted
+     code.
+   - In asyncio you can use =run_in_executor= to achieve the same
+     result.
+* ¿Questions?
+  - My email: jsandoval@utp.edu.co
+  - Slides: http://slcorvus.org/presentation.html
