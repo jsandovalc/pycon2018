@@ -479,3 +479,4 @@ it. I worked around 8 years with the twisted framework.
 * ¿Questions?
   - My email: jsandoval@utp.edu.co
   - Slides: http://slcorvus.org/presentation.html
+  - Repo with code: https://github.com/jsandovalc/pycon2018
