@@ -40,7 +40,7 @@ The title of my talk is "Introduction to asynchronous programming with
 Python and Twisted". It's a very precise title because what I'll do
 here is show you some asynchronous concepts with python and the
 twisted framework. And I plan on comparing those examples with the
-AsyncIO framework that's trendy in the python world.
+Asyncio framework that's trendy in the python world.
 
 So, this is the structure of my talk.
 
@@ -422,7 +422,7 @@ it. I worked around 8 years with the twisted framework.
      As you can see, Klein (twisted) is compatible with async def and
      await syntax.
      #+END_NOTES
-* AsyncIO for Web (with Sanic)
+* Asyncio for Web (with Sanic)
   #+begin_src python
     from sanic import Sanic
     from sanic.response import html
